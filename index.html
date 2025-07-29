@@ -1,0 +1,558 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Tanques WW1/WW2 2D Pixel Art</title>
+<style>
+  body, canvas, #devPanel, #info, button {
+    -webkit-user-select: none; /* Safari */
+    user-select: none;         /* Outros navegadores */
+  }
+  body {
+    margin: 0;
+    background: #222;
+    font-family: monospace;
+    overflow: hidden;
+  }
+  canvas {
+    display: block;
+    margin: auto;
+    background: #444;
+    image-rendering: pixelated;
+  }
+  #info {
+    color: white;
+    text-align: center;
+    margin: 5px;
+  }
+  #devPanel {
+    position: fixed;
+    top: 40px;
+    right: -250px;
+    width: 250px;
+    height: calc(100% - 40px);
+    background: #222;
+    color: white;
+    border-left: 2px solid #555;
+    box-shadow: -4px 0 10px #000a;
+    transition: right 0.3s ease;
+    padding: 10px;
+    overflow-y: auto;
+    z-index: 1000;
+  }
+  #devPanel.open {
+    right: 0;
+  }
+  #devToggle {
+    position: fixed;
+    top: 5px;
+    right: 5px;
+    background: #333;
+    border: none;
+    color: white;
+    padding: 8px 12px;
+    cursor: pointer;
+    font-weight: bold;
+    z-index: 1100;
+  }
+  #devPanel h2 {
+    margin-top: 0;
+    font-size: 18px;
+    border-bottom: 1px solid #555;
+    padding-bottom: 5px;
+  }
+  .vehicleItem {
+    background: #333;
+    margin: 8px 0;
+    padding: 8px;
+    cursor: pointer;
+    border-radius: 4px;
+    transition: background 0.2s ease;
+  }
+  .vehicleItem:hover {
+    background: #555;
+  }
+</style>
+</head>
+<body>
+<div id="info">Use W/S para andar, A/D para girar, espaço para metralhadora, clique esquerdo para canhão, i para reparar.</div>
+<button id="devToggle" type="button">Veículos</button>
+<div id="devPanel" aria-hidden="true">
+  <h2>Veículos Normais</h2>
+  <div class="vehicleItem" data-id="default">Tanque Básico</div>
+  <div class="vehicleItem" data-id="light">Tanque Leve</div>
+  <div class="vehicleItem" data-id="heavy">Tanque Pesado</div>
+  <hr>
+  <h2>Tanque Secreto</h2>
+  <div><em>Digite "cooltank" para liberar o Mendeleev Tank!</em></div>
+</div>
+
+<canvas id="game" width="900" height="600"></canvas>
+
+<script>
+(() => {
+  const canvas = document.getElementById("game");
+  const ctx = canvas.getContext("2d");
+
+  // --- MAPA ---
+  const MAP_WIDTH = 2000;
+  const MAP_HEIGHT = 1200;
+
+  // --- CONTROLES ---
+  const keys = {};
+  let mouseDown = false;
+  let mouseX = 0;
+  let mouseY = 0;
+
+  window.addEventListener("keydown", e => { keys[e.key.toLowerCase()] = true; });
+  window.addEventListener("keyup", e => { keys[e.key.toLowerCase()] = false; });
+
+  canvas.addEventListener("mousedown", e => { if(e.button === 0) mouseDown = true; });
+  canvas.addEventListener("mouseup", e => { if(e.button === 0) mouseDown = false; });
+  canvas.addEventListener("mousemove", e => {
+    const rect = canvas.getBoundingClientRect();
+    mouseX = e.clientX - rect.left;
+    mouseY = e.clientY - rect.top;
+  });
+
+  // --- TANQUES ---
+  // Modelos de tanque (únicos)
+  const tankModels = {
+    default: {
+      name: "Tanque Básico",
+      width: 60,
+      height: 40,
+      speed: 3,
+      maxHp: 100,
+      bodyColor: "#4a7f4a",
+      turretColor: "#2f4f2f",
+      cooldownMG: 5,     // metralhadora cooldown
+      cooldownCannon: 60 // canhão cooldown
+    },
+    light: {
+      name: "Tanque Leve",
+      width: 50,
+      height: 35,
+      speed: 3.5,
+      maxHp: 80,
+      bodyColor: "#7a7a2f",
+      turretColor: "#505012",
+      cooldownMG: 3,
+      cooldownCannon: 70
+    },
+    heavy: {
+      name: "Tanque Pesado",
+      width: 90,
+      height: 60,
+      speed: 2,
+      maxHp: 180,
+      bodyColor: "#7a2f2f",
+      turretColor: "#501212",
+      cooldownMG: 7,
+      cooldownCannon: 120
+    },
+    mendeleev: {
+      name: "Mendeleev Tank",
+      width: 85,
+      height: 55,
+      speed: 1.8,
+      maxHp: 300,
+      bodyColor: "#2a4a6a",
+      turretColor: "#1f3350",
+      cooldownMG: 50,     // metralhadora (maior cooldown, tipo Maxim)
+      cooldownCannon: 90,
+      repairTime: 300,    // frames para reparar (exemplo)
+      specialArmor: true  // vai usar sistema blindagem especial
+    }
+  };
+
+  // Estado do jogador
+  let currentModel = "default";
+
+  const player = {
+    x: MAP_WIDTH/2,
+    y: MAP_HEIGHT/2,
+    angle: 0,
+    wheelRotation: 0,
+    cooldownMG: 0,
+    cooldownCannon: 0,
+    hp: tankModels["default"].maxHp,
+    repairing: false,
+    repairProgress: 0,
+    canShootCannon: true,
+    armorDamage: {
+      body: 0,
+      cannon: 0,
+      turret: 0
+    }
+  };
+
+  function resetPlayer(modelKey) {
+    const model = tankModels[modelKey];
+    player.x = MAP_WIDTH/2;
+    player.y = MAP_HEIGHT/2;
+    player.angle = 0;
+    player.wheelRotation = 0;
+    player.cooldownMG = 0;
+    player.cooldownCannon = 0;
+    player.hp = model.maxHp;
+    player.repairing = false;
+    player.repairProgress = 0;
+    player.canShootCannon = true;
+    player.armorDamage = {body: 0, cannon: 0, turret: 0};
+    currentModel = modelKey;
+  }
+
+  resetPlayer(currentModel);
+
+  // Balas disparadas
+  const bullets = [];
+
+  // Inimigos simples (só aparecem para teste)
+  const enemies = [];
+
+  // Câmera
+  const camera = {
+    x: 0,
+    y: 0,
+    zoom: 1.5
+  };
+
+  function clamp(val, min, max) {
+    return Math.min(Math.max(val, min), max);
+  }
+
+  // Função para calcular se tiro atingiu parte do tanque
+  function checkArmorHit(tank, bulletX, bulletY) {
+    const model = tankModels[currentModel];
+    // Simplificando: canhão na frente do tanque, corpo no centro, torre acima do corpo
+    // Vamos dividir em 3 regiões retangulares para checar o hit
+
+    // Coordenadas relativas ao tanque
+    let relX = bulletX - tank.x;
+    let relY = bulletY - tank.y;
+
+    // Rotaciona para o sistema local do tanque (inverte rotação)
+    const cos = Math.cos(-tank.angle);
+    const sin = Math.sin(-tank.angle);
+    let localX = relX * cos - relY * sin;
+    let localY = relX * sin + relY * cos;
+
+    // Corpo: retângulo central
+    const bodyRect = {
+      left: -model.width/2,
+      right: model.width/2,
+      top: -model.height/2,
+      bottom: model.height/2
+    };
+
+    // Canhão: retângulo na frente, mais fino
+    const cannonRect = {
+      left: 0,
+      right: model.width/2 + 10,
+      top: -7,
+      bottom: 7
+    };
+
+    // Torre: retângulo menor, atrás do canhão
+    const turretRect = {
+      left: -model.width/4,
+      right: 0,
+      top: -model.height/4,
+      bottom: model.height/4
+    };
+
+    if (
+      localX >= cannonRect.left && localX <= cannonRect.right &&
+      localY >= cannonRect.top && localY <= cannonRect.bottom
+    ) return 'cannon';
+
+    if (
+      localX >= turretRect.left && localX <= turretRect.right &&
+      localY >= turretRect.top && localY <= turretRect.bottom
+    ) return 'turret';
+
+    if (
+      localX >= bodyRect.left && localX <= bodyRect.right &&
+      localY >= bodyRect.top && localY <= bodyRect.bottom
+    ) return 'body';
+
+    return null;
+  }
+
+  // Atualiza jogador
+  function updatePlayer() {
+    const model = tankModels[currentModel];
+
+    if(player.repairing) {
+      player.repairProgress++;
+      if(player.repairProgress >= model.repairTime) {
+        player.repairing = false;
+        player.repairProgress = 0;
+        player.canShootCannon = true;
+        player.armorDamage = {body: 0, cannon: 0, turret: 0};
+      }
+      return;
+    }
+
+    // Movimento (W/S)
+    if(keys["w"]) {
+      player.x += Math.cos(player.angle) * model.speed;
+      player.y += Math.sin(player.angle) * model.speed;
+    }
+    if(keys["s"]) {
+      player.x -= Math.cos(player.angle) * model.speed * 0.7;
+      player.y -= Math.sin(player.angle) * model.speed * 0.7;
+    }
+
+    // Rotação (A/D)
+    if(keys["a"]) {
+      player.angle -= 0.05;
+    }
+    if(keys["d"]) {
+      player.angle += 0.05;
+    }
+
+    // Cooldowns
+    if(player.cooldownMG > 0) player.cooldownMG--;
+    if(player.cooldownCannon > 0) player.cooldownCannon--;
+
+    // Disparo metralhadora (espaço)
+    if(keys[" "] && player.cooldownMG <= 0) {
+      shootBullet("mg");
+      player.cooldownMG = model.cooldownMG;
+    }
+
+    // Disparo canhão (clique esquerdo)
+    if(mouseDown && player.cooldownCannon <= 0 && player.canShootCannon) {
+      shootBullet("cannon");
+      player.cooldownCannon = model.cooldownCannon;
+    }
+
+    // Reparo (i)
+    if(keys["i"] && !player.repairing) {
+      player.repairing = true;
+      player.repairProgress = 0;
+    }
+
+    // Limites do mapa
+    player.x = clamp(player.x, 0, MAP_WIDTH);
+    player.y = clamp(player.y, 0, MAP_HEIGHT);
+  }
+
+  // Tiros
+  function shootBullet(type) {
+    const model = tankModels[currentModel];
+    const speed = (type === "mg") ? 8 : 5;
+    const damage = (type === "mg") ? 5 : 40;
+    const size = (type === "mg") ? 4 : 10;
+
+    // Origem do tiro na ponta do canhão (mais um pouco a frente)
+    const offsetX = Math.cos(player.angle) * (tankModels[currentModel].width/2 + 10);
+    const offsetY = Math.sin(player.angle) * (tankModels[currentModel].width/2 + 10);
+
+    bullets.push({
+      x: player.x + offsetX,
+      y: player.y + offsetY,
+      angle: player.angle,
+      speed: speed,
+      damage: damage,
+      size: size,
+      type: type,
+      alive: true
+    });
+
+    // Adiciona efeito fogo simples (chama)
+    addShotFlame(player.x + offsetX, player.y + offsetY, type);
+  }
+
+  // Efeito chama de tiro simples
+  const flames = [];
+  function addShotFlame(x, y, type) {
+    flames.push({x, y, size: (type==="mg") ? 6 : 12, alpha: 1});
+  }
+
+  function updateFlames() {
+    for(let i=flames.length-1; i>=0; i--) {
+      flames[i].alpha -= 0.03;
+      flames[i].size += 0.4;
+      if(flames[i].alpha <= 0) flames.splice(i, 1);
+    }
+  }
+
+  // Atualiza balas
+  function updateBullets() {
+    for(let i = bullets.length -1; i>=0; i--) {
+      const b = bullets[i];
+      b.x += Math.cos(b.angle) * b.speed;
+      b.y += Math.sin(b.angle) * b.speed;
+
+      // Fora do mapa
+      if(b.x < 0 || b.x > MAP_WIDTH || b.y < 0 || b.y > MAP_HEIGHT) {
+        bullets.splice(i, 1);
+        continue;
+      }
+
+      // Colisão com o próprio jogador? Ignorar (não há inimigos ainda)
+    }
+  }
+
+  // Desenho do tanque
+  function drawTank(tank, model) {
+    ctx.save();
+    ctx.translate(tank.x - camera.x, tank.y - camera.y);
+    ctx.rotate(tank.angle);
+
+    // Corpo
+    ctx.fillStyle = model.bodyColor;
+    ctx.fillRect(-model.width/2, -model.height/2, model.width, model.height);
+
+    // Torre
+    ctx.fillStyle = model.turretColor;
+    ctx.fillRect(-model.width/4, -model.height/4, model.width/2, model.height/2);
+
+    // Canhão (retângulo na frente)
+    ctx.fillStyle = "#222";
+    ctx.fillRect(model.width/2 - 10, -7, 20, 14);
+
+    // Vida
+    const hpPercent = tank.hp / model.maxHp;
+    ctx.fillStyle = hpPercent > 0.5 ? "#0f0" : hpPercent > 0.25 ? "#fa0" : "#f00";
+    ctx.fillRect(-model.width/2, -model.height/2 - 12, model.width * hpPercent, 6);
+
+    // Reparando indicador
+    if(tank.repairing) {
+      ctx.fillStyle = "#0af";
+      ctx.fillRect(-model.width/2, model.height/2 + 4, model.width * (tank.repairProgress / model.repairTime), 6);
+    }
+
+    ctx.restore();
+  }
+
+  // Desenha balas
+  function drawBullets() {
+    bullets.forEach(b => {
+      ctx.save();
+      ctx.translate(b.x - camera.x, b.y - camera.y);
+      ctx.rotate(b.angle);
+      ctx.fillStyle = (b.type === "mg") ? "#ffa" : "#faa";
+      ctx.beginPath();
+      ctx.ellipse(0, 0, b.size, b.size/2, 0, 0, Math.PI*2);
+      ctx.fill();
+      ctx.restore();
+    });
+  }
+
+  // Desenha chamas
+  function drawFlames() {
+    flames.forEach(f => {
+      ctx.save();
+      ctx.globalAlpha = f.alpha;
+      ctx.fillStyle = "orange";
+      ctx.beginPath();
+      ctx.ellipse(f.x - camera.x, f.y - camera.y, f.size, f.size/2, 0, 0, Math.PI*2);
+      ctx.fill();
+      ctx.restore();
+    });
+  }
+
+  // Atualiza câmera para seguir jogador
+  function updateCamera() {
+    camera.x = player.x - canvas.width / (2 * camera.zoom);
+    camera.y = player.y - canvas.height / (2 * camera.zoom);
+
+    camera.x = clamp(camera.x, 0, MAP_WIDTH - canvas.width / camera.zoom);
+    camera.y = clamp(camera.y, 0, MAP_HEIGHT - canvas.height / camera.zoom);
+  }
+
+  // Desenha HUD
+  function drawHUD() {
+    ctx.save();
+    ctx.fillStyle = "white";
+    ctx.font = "14px monospace";
+
+    const model = tankModels[currentModel];
+    ctx.fillText("Veículo: " + model.name, 10, 20);
+    ctx.fillText(`HP: ${player.hp} / ${model.maxHp}`, 10, 40);
+    ctx.fillText(`Cooldown MG: ${player.cooldownMG}`, 10, 60);
+    ctx.fillText(`Cooldown Canhão: ${player.cooldownCannon}`, 10, 80);
+    if(player.repairing) ctx.fillText("Reparando...", 10, 100);
+
+    ctx.restore();
+  }
+
+  // Função para alternar veículo via painel dev
+  const devToggleBtn = document.getElementById("devToggle");
+  const devPanel = document.getElementById("devPanel");
+
+  devToggleBtn.onclick = () => {
+    if(devPanel.classList.contains("open")) {
+      devPanel.classList.remove("open");
+      devPanel.setAttribute("aria-hidden", "true");
+    } else {
+      devPanel.classList.add("open");
+      devPanel.setAttribute("aria-hidden", "false");
+    }
+  };
+
+  // Seleção via painel
+  document.querySelectorAll(".vehicleItem").forEach(el => {
+    el.onclick = () => {
+      const id = el.getAttribute("data-id");
+      resetPlayer(id);
+      devPanel.classList.remove("open");
+      devPanel.setAttribute("aria-hidden", "true");
+    };
+  });
+
+  // --- Cheat code "cooltank" para liberar Mendeleev Tank ---
+  const cheatCode = ['c','o','o','l','t','a','n','k'];
+  let cheatIndex = 0;
+  window.addEventListener('keydown', e => {
+    if(e.key.toLowerCase() === cheatCode[cheatIndex]) {
+      cheatIndex++;
+      if(cheatIndex === cheatCode.length) {
+        cheatIndex = 0;
+        resetPlayer('mendeleev');
+        alert("Mendeleev Tank desbloqueado! 🚀");
+      }
+    } else {
+      cheatIndex = 0;
+    }
+  });
+
+  // --- Loop principal ---
+  function loop() {
+    updatePlayer();
+    updateBullets();
+    updateFlames();
+    updateCamera();
+
+    // Fundo
+    ctx.fillStyle = "#222";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    // Aqui desenharia mapa, obstáculos, etc (ainda simples)
+    // ...
+
+    // Desenha jogador
+    drawTank(player, tankModels[currentModel]);
+
+    // Balas
+    drawBullets();
+
+    // Chamas de tiro
+    drawFlames();
+
+    // HUD
+    drawHUD();
+
+    requestAnimationFrame(loop);
+  }
+
+  loop();
+})();
+</script>
+</body>
+</html>
